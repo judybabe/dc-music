@@ -1,0 +1,14 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# dotenv
+.env
+
+# secret cookies
+cookies.txt
+
+# OS files
+.DS_Store
+Thumbs.db
