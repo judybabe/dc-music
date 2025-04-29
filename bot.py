@@ -4,22 +4,34 @@ from dotenv import load_dotenv
 import asyncio
 import discord
 import random
-import os.path
 import os
-
-# === Keep alive server for Render ===
+import re
+import spotipy
+import requests
+from bs4 import BeautifulSoup
+from spotipy.oauth2 import SpotifyClientCredentials
 from threading import Thread
 from http.server import HTTPServer, SimpleHTTPRequestHandler
 
+# === Keep alive server for Render ===
 def keep_alive():
-    server = HTTPServer(('0.0.0.0', 8080), SimpleHTTPRequestHandler)
+    port = int(os.environ.get("PORT", 8080))
+    server = HTTPServer(('0.0.0.0', port), SimpleHTTPRequestHandler)
     server.serve_forever()
 
 Thread(target=keep_alive, daemon=True).start()
 
-# === Load .env token ===
+# === Load environment variables ===
 load_dotenv()
 TOKEN = os.getenv("DISCORD_TOKEN")
+SPOTIFY_CLIENT_ID = os.getenv("SPOTIFY_CLIENT_ID")
+SPOTIFY_CLIENT_SECRET = os.getenv("SPOTIFY_CLIENT_SECRET")
+
+# === Spotify API setup ===
+sp = spotipy.Spotify(auth_manager=SpotifyClientCredentials(
+    client_id=SPOTIFY_CLIENT_ID,
+    client_secret=SPOTIFY_CLIENT_SECRET
+))
 
 # === Discord bot setup ===
 intents = discord.Intents.default()
@@ -34,6 +46,7 @@ looping = False
 
 # === YouTube download options ===
 ydl_opts = {
+    'cookiefile': '/etc/secrets/cookies.txt',
     'format': 'bestaudio',
     'quiet': True,
     'default_search': 'ytsearch',
@@ -43,12 +56,61 @@ ydl_opts = {
     }
 }
 
-# === Discord Commands ===
+# === Bot events ===
+@bot.event
+async def on_ready():
+    print(f"✅ 機器人已上線：{bot.user}")
+
+# === 播放邏輯 ===
+async def play_next(ctx):
+    if not queue:
+        return
+
+    search = queue[0]
+    vc = ctx.voice_client
+    if not vc or not vc.is_connected():
+        await ctx.send("❗ 我還沒加入語音頻道，請先輸入 `!join`")
+        return
+
+    try:
+        with YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(search, download=False)
+            if 'entries' in info:
+                info = info['entries'][0]
+            url = info['url']
+            title = info.get('title', '未知歌曲')
+    except Exception as e:
+        print("YT-DLP 播放錯誤：", e)
+        await ctx.send("⚠️ 無法播放此歌曲，可能是需要登入或請求過多。")
+        queue.pop(0)
+        return
+
+    ffmpeg_options = {
+        'before_options': '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5',
+        'options': '-vn'
+    }
+
+    source = discord.FFmpegPCMAudio(url, **ffmpeg_options)
+
+    def after_playing(err):
+        if err:
+            print(f"播放中斷錯誤：{err}")
+        if not looping:
+            queue.pop(0)
+        fut = asyncio.run_coroutine_threadsafe(play_next(ctx), bot.loop)
+        try:
+            fut.result()
+        except Exception as e:
+            print(f"播放後錯誤: {e}")
+
+    vc.play(source, after=after_playing)
+    await ctx.send(f"🎶 正在播放：**{title}**")
+
+# === 指令 ===
 @bot.command()
 async def join(ctx):
     if ctx.author.voice:
-        channel = ctx.author.voice.channel
-        await channel.connect()
+        await ctx.author.voice.channel.connect()
     else:
         await ctx.send("你必須先加入語音頻道！")
 
@@ -61,7 +123,30 @@ async def leave(ctx):
 
 @bot.command()
 async def play(ctx, *, search: str):
-    queue.append(search)
+    if "open.spotify.com/track/" in search:
+        track_id = search.split("/")[-1].split("?")[0]
+        track = sp.track(track_id)
+        song_name = track['name']
+        artists = ", ".join([artist['name'] for artist in track['artists']])
+        query = f"{song_name} {artists}"
+        queue.append(query)
+        await ctx.send(f"🎵 已加入歌曲：{query}")
+
+    elif "open.spotify.com/playlist/" in search:
+        playlist_id = search.split("/")[-1].split("?")[0]
+        results = sp.playlist_tracks(playlist_id)
+        for item in results['items']:
+            track = item['track']
+            if track:
+                song_name = track['name']
+                artists = ", ".join([artist['name'] for artist in track['artists']])
+                query = f"{song_name} {artists}"
+                queue.append(query)
+        await ctx.send(f"📜 歌單已加入 {len(results['items'])} 首歌曲！")
+
+    else:
+        queue.append(search)
+
     if not ctx.voice_client or not ctx.voice_client.is_playing():
         await play_next(ctx)
 
@@ -102,54 +187,54 @@ async def stop(ctx):
         ctx.voice_client.stop()
     await ctx.send("已停止播放並清空播放清單。")
 
-# === 播放下一首 ===
-async def play_next(ctx):
+@bot.command(name="queue")
+async def queue_list(ctx):
     if not queue:
+        await ctx.send("播放清單是空的。")
+    else:
+        message = "**🎵 播放清單：**\n"
+        for idx, item in enumerate(queue, start=1):
+            message += f"{idx}. {item}\n"
+        await ctx.send(message)
+
+@bot.command()
+async def remove(ctx, index: int):
+    if 1 <= index <= len(queue):
+        removed = queue.pop(index - 1)
+        await ctx.send(f"🗑️ 已從播放清單移除：{removed}")
+    else:
+        await ctx.send("⚠️ 無效的編號，請使用 `!queue` 查看正確編號。")
+
+@bot.command()
+async def clear(ctx):
+    queue.clear()
+    await ctx.send("🧹 播放清單已清空（目前播放不受影響）。")
+
+@bot.command()
+async def lyrics(ctx):
+    if not queue:
+        await ctx.send("目前沒有播放歌曲，無法搜尋歌詞。")
         return
 
-    search = queue[0]
-    vc = ctx.voice_client
-    if not vc or not vc.is_connected():
-        await ctx.send("❗ 我還沒加入語音頻道，請先輸入 `!join`")
-        return
+    song = queue[0]
+    query = song.replace(" ", "+")
+    url = f"https://search.azlyrics.com/search.php?q={query}"
 
     try:
-        with YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(search, download=False)
-            if 'entries' in info:
-                info = info['entries'][0]
-            url = info['url']
-            title = info.get('title', '未知歌曲')
+        response = requests.get(url)
+        soup = BeautifulSoup(response.text, "html.parser")
+        table = soup.find("td", class_="text-left visitedlyr")
+        if table:
+            link = table.a['href']
+            lyrics_page = requests.get(link)
+            soup2 = BeautifulSoup(lyrics_page.text, "html.parser")
+            divs = soup2.find_all("div", class_=None)
+            lyrics_text = divs[1].get_text(separator="\n").strip()
+            await ctx.send(f"📜 **{song} 的歌詞：**\n```{lyrics_text[:1500]}...```")
+        else:
+            await ctx.send("❌ 找不到歌詞 QQ")
     except Exception as e:
-        print("YT-DLP 播放錯誤：", e)
-        await ctx.send("⚠️ 無法播放此歌曲，可能是需要登入或請求過多。請檢查 cookies.txt。")
-        queue.pop(0)
-        return
-
-    ffmpeg_options = {
-        'before_options': '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5',
-        'options': '-vn'
-    }
-
-    source = discord.FFmpegPCMAudio(url, **ffmpeg_options)
-
-    def after_playing(err):
-        if err:
-            print(f"播放中斷錯誤：{err}")
-        if not looping:
-            queue.pop(0)
-        fut = asyncio.run_coroutine_threadsafe(play_next(ctx), bot.loop)
-        try:
-            fut.result()
-        except Exception as e:
-            print(f"播放後錯誤: {e}")
-
-    vc.play(source, after=after_playing)
-    await ctx.send(f"🎶 正在播放：**{title}**")
-
-# === Bot Ready ===
-@bot.event
-async def on_ready():
-    print(f"✅ 機器人已上線：{bot.user}")
+        print("歌詞錯誤：", e)
+        await ctx.send("⚠️ 抱歉，搜尋歌詞時發生錯誤。")
 
 bot.run(TOKEN)
