@@ -7,19 +7,8 @@ import random
 import os
 import re
 import spotipy
-import requests
-from bs4 import BeautifulSoup
 from spotipy.oauth2 import SpotifyClientCredentials
-from threading import Thread
-from http.server import HTTPServer, SimpleHTTPRequestHandler
 
-# === Keep alive server for Render ===
-def keep_alive():
-    port = int(os.environ.get("PORT", 8080))
-    server = HTTPServer(('0.0.0.0', port), SimpleHTTPRequestHandler)
-    server.serve_forever()
-
-Thread(target=keep_alive, daemon=True).start()
 
 # === Load environment variables ===
 load_dotenv()
@@ -46,17 +35,14 @@ looping = False
 
 # === YouTube download options ===
 
-if not os.path.exists("/etc/secrets/cookies.txt"):
-    print("❌ ERROR: cookies.txt not found at /etc/secrets/cookies.txt")
-else:
-    print("✅ cookies.txt found and ready.")
+if not os.path.exists("cookies.txt"):
+    print("cookies.txt not found.")
 ydl_opts = {
-    'cookiefile': '/etc/secrets/cookies.txt',
+    'cookiefile': 'cookies.txt',
     'format': 'bestaudio',
     'quiet': True,
     'default_search': 'ytsearch',
     'noplaylist': True,
-    'verbose': True,
     'http_headers': {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/112.0.0.0 Safari/537.36'
     }
@@ -216,31 +202,5 @@ async def clear(ctx):
     queue.clear()
     await ctx.send("🧹 播放清單已清空（目前播放不受影響）。")
 
-@bot.command()
-async def lyrics(ctx):
-    if not queue:
-        await ctx.send("目前沒有播放歌曲，無法搜尋歌詞。")
-        return
-
-    song = queue[0]
-    query = song.replace(" ", "+")
-    url = f"https://search.azlyrics.com/search.php?q={query}"
-
-    try:
-        response = requests.get(url)
-        soup = BeautifulSoup(response.text, "html.parser")
-        table = soup.find("td", class_="text-left visitedlyr")
-        if table:
-            link = table.a['href']
-            lyrics_page = requests.get(link)
-            soup2 = BeautifulSoup(lyrics_page.text, "html.parser")
-            divs = soup2.find_all("div", class_=None)
-            lyrics_text = divs[1].get_text(separator="\n").strip()
-            await ctx.send(f"📜 **{song} 的歌詞：**\n```{lyrics_text[:1500]}...```")
-        else:
-            await ctx.send("❌ 找不到歌詞 QQ")
-    except Exception as e:
-        print("歌詞錯誤：", e)
-        await ctx.send("⚠️ 抱歉，搜尋歌詞時發生錯誤。")
 
 bot.run(TOKEN)
