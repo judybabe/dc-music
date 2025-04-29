@@ -45,12 +45,18 @@ queue = []
 looping = False
 
 # === YouTube download options ===
+
+if not os.path.exists("/etc/secrets/cookies.txt"):
+    print("❌ ERROR: cookies.txt not found at /etc/secrets/cookies.txt")
+else:
+    print("✅ cookies.txt found and ready.")
 ydl_opts = {
     'cookiefile': '/etc/secrets/cookies.txt',
     'format': 'bestaudio',
     'quiet': True,
     'default_search': 'ytsearch',
     'noplaylist': True,
+    'verbose': True,
     'http_headers': {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/112.0.0.0 Safari/537.36'
     }
