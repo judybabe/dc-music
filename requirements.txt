@@ -2,7 +2,5 @@ discord.py
 yt-dlp
 python-dotenv
 spotipy
-requests
-beautifulsoup4
 ffmpeg-python
 PyNaCl
